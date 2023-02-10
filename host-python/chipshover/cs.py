@@ -21,7 +21,7 @@
 # * See the License for the specific language governing permissions and
 # * limitations under the License.
 # ********************************************************************************/
-'''
+"""
     ChipShover API Documentation
     ============================
 
@@ -67,14 +67,14 @@
     happen. Without the `stop()` command, the controller will finish
     executing the last command, such as a move.
 
-'''
-import serial
-import time
+"""
+
 from .samba import Samba
-import os
-import base64
-import datetime
 import binascii
+import datetime
+import serial
+import serial.tools.list_ports
+import time
 
 
 def firmware_update(comport, fw_path=None):
@@ -108,15 +108,17 @@ def firmware_update(comport, fw_path=None):
         else:
             sam.ser.close()
             raise OSError("Firmware verify FAILED!")
-    except:
+    except Exception:
         sam.ser.close()
         raise
+
 
 def _gen_firmware(fw_path=None):
     f = open("firmware.py", "w")
 
-    f.write("# This file was auto-generated. Do not manually edit or save. What are you doing looking at it? Close it now!\n")
-    f.write("# Generated on %s\n"%datetime.datetime.now())
+    f.write("# This file was auto-generated. Do not manually edit or save. What are you doing looking at it? "
+            "Close it now!\n")
+    f.write("# Generated on %s\n" % datetime.datetime.now())
     f.write("#\n")
     f.write("import binascii\n")
     f.write("import io\n\n")
@@ -137,13 +139,14 @@ def _gen_firmware(fw_path=None):
         # json_str = base64.b64encode(e_file.read())# json.dumps(e_file.read(), ensure_ascii=False)
         json_str = binascii.b2a_base64(e_file.read())
 
-        f.write("\n#Contents from %s\n"%fw_path)
-        f.write("'%s':'"%'firmware.bin')
-        f.write(json_str.decode().replace("\n",""))
+        f.write("\n#Contents from %s\n" % fw_path)
+        f.write("'%s':'" % 'firmware.bin')
+        f.write(json_str.decode().replace("\n", ""))
         f.write("',\n\n")
         f.flush()
     f.write("}\n")
     pass
+
 
 class ChipShover:
     """ChipShover is a controller for XYZ tables. Assumes Marlin-based
@@ -151,86 +154,85 @@ class ChipShover:
        
        
     """
-    
-    #Default ChipShover table/firmware combo
+
+    # Default ChipShover table/firmware combo
     STEPS_PER_MM = 1600
-    
+
     def __init__(self, comport):
         """Connect to ChipShover-Controller using given serial port."""
         self.ser = serial.Serial(comport, rtscts=True)
         self._com = comport
-        
-        #Required for ChipShover-One + Archim2 USB serial
+
+        # Required for ChipShover-One + Archim2 USB serial
         self.ser.rtscts = True
         self.ser.timeout = 0.25
         self.z_home = None
 
         self.ser.flush()
         self.ser.reset_input_buffer()
-        
-        #Check if table seems legit
-        
-        #Abs mode by default
+
+        # Check if table seems legit
+
+        # Abs mode by default
         self.ser.write(b"G90\n")
         self.wait_done()
-        
-        #MM by default
+
+        # MM by default
         self.ser.write(b"G21\n")
         self.wait_done()
 
-        #Check the "steps per unit" is valid
+        # Check the "steps per unit" is valid
         self.ser.write(b"M503\n")
         results = self.wait_done()
         try:
             splitres = results.split(b"Steps per unit:\necho: M92")[1].split(b"\n")[0]
             splitres = splitres.split(b" ")
             if splitres[1][0] != ord('X') or \
-               splitres[2][0] != ord('Y') or \
-               splitres[3][0] != ord('Z'):
+                    splitres[2][0] != ord('Y') or \
+                    splitres[3][0] != ord('Z'):
                 raise IOError("Communication problem attempting to read" + \
-                               "M503 response. %s was splitres"%splitres)
+                              "M503 response. %s was splitres" % splitres)
             xsteps = float(splitres[1][1:])
             ysteps = float(splitres[2][1:])
             zsteps = float(splitres[3][1:])
 
             if xsteps != ysteps != zsteps:
-                raise ValueError("XSTEPS/YSTEPS/ZSTEPS differs. Abort. %f %f %f"%(xsteps, ysteps, zsteps))
+                raise ValueError("XSTEPS/YSTEPS/ZSTEPS differs. Abort. %f %f %f" % (xsteps, ysteps, zsteps))
 
             if xsteps < 100 or xsteps > 10E3:
-                raise ValueError("Sanity check in XSTEPS failed. %f"%xsteps)
+                raise ValueError("Sanity check in XSTEPS failed. %f" % xsteps)
 
             self.STEPS_PER_MM = int(xsteps)
 
-        except:
+        except Exception:
             print("Failed to read steps/mm, check communication is OK.")
-            print("Response to M503: %s"%results)
+            print("Response to M503: %s" % results)
             raise
-
 
         self.set_fan(50)
 
         self.call_stop_on_ctrlc = True
-        
-        #TODO - 
-        #signal.signal(signal.SIGINT, self.stop)
-        
+
+        # TODO -
+        # signal.signal(signal.SIGINT, self.stop)
+
     def set_fan(self, fan_speed=100):
         """Sets cooling fan speed, range of 0 - 100"""
 
-        fan_pwm = (float(fan_speed) / 100.0)*255
+        fan_pwm = (float(fan_speed) / 100.0) * 255
         fan_pwm = int(round(fan_pwm))
         fan_pwm = min(fan_pwm, 255)
         fan_pwm = max(fan_pwm, 0)
 
-        #Early protos had this as P1, now P0
-        self.ser.write(b"M106 P0 S%d\n"%fan_pwm)
+        # Early protos had this as P1, now P0
+        self.ser.write(b"M106 P0 S%d\n" % fan_pwm)
         self.wait_done()
 
     def close(self):
         """Closes serial port"""
         self.set_fan(0)
         self.ser.close()
-        
+
     def stop(self):
         """Calls EMERGENCY STOP command (M410).
         
@@ -239,7 +241,7 @@ class ChipShover:
         self.ser.write(b"M410\n")
         print("**STOP CALLED. Motor positions will be incorrect. Please re-home.")
         self.wait_done()
-        
+
     def kill(self):
         """Calls KILL command (M112) to stop all movement.
         
@@ -251,7 +253,7 @@ class ChipShover:
         self.ser.write(b"M112\n")
         print("***KILL CALLED. Power Cycle Needed!***")
         self.wait_done()
-        
+
     def move_zdepth(self, z_depth):
         """Sets the Z axis to a given 'depth', as referenced from home.
         
@@ -259,11 +261,11 @@ class ChipShover:
         Z = 0 being the axis bottom. Most of the time you'd like to specify depth
         below home position instead, this function lets you do that.
         """
-        
+
         if self.z_home is None:
             raise ValueError("Run Homing First")
-        self.move(z= self.z_home - z_depth)
-        
+        self.move(z=self.z_home - z_depth)
+
     def move(self, x=None, y=None, z=None, debug=False):
         """Move table to commanded X, Y, Z location.
         
@@ -277,35 +279,33 @@ class ChipShover:
                  You can use the `move_zdepth()` function for
                  moving a depth from the home position instead.
         """
-        
+
         cmdstr = b"G0 "
         if x is not None:
-            cmdstr += b"X%f"%x
+            cmdstr += b"X%f" % x
         if y is not None:
-            cmdstr += b"Y%f"%y
+            cmdstr += b"Y%f" % y
         if z is not None:
-            cmdstr += b"Z%f"%z
-            
+            cmdstr += b"Z%f" % z
+
         cmdstr += b"\n"
-        
+
         if debug:
             print(cmdstr)
-            
-        
-        self.ser.write(cmdstr)        
+
+        self.ser.write(cmdstr)
         self.wait_done()
 
         self.wait_for_move()
-        
+
     def wait_for_move(self):
         """Wait for current movement to be done"""
 
         self.ser.flush()
         self.ser.reset_input_buffer()
-        #wait for move to finish
+        # wait for move to finish
         self.ser.write(b"M400\n")
         self.wait_done()
-
 
     def get_position(self, forcefinish=True):
         """Gets the X/Y/Z position of the table.
@@ -315,57 +315,55 @@ class ChipShover:
         will return incorrect (final not current)
         position.
         """
-        
+
         if forcefinish:
-            #wait for move to finish
+            # wait for move to finish
             self.wait_for_move()
-        
+
         self.ser.write(b"M114\n")
-        
+
         pos_line = self.ser.readline()
         ok = self.ser.readline()
-        
-        if ok != b'ok\n':
-            print("DEBUG: 'pos_line': %s"%pos_line)
-            print("DEBUG: 'ok' line : %s"%ok)
-            raise IOError("Com error on M114 - received %s, expected 'ok'\n"%ok)
-            
-        
-        pos_line = pos_line.split(b' ')       
-        if (pos_line[0][0] != ord('X')) or \
-           (pos_line[1][0] != ord('Y')) or \
-           (pos_line[2][0] != ord('Z')) or \
-           (pos_line[5][0] != ord('X')) or \
-           (pos_line[6][0] != ord('Y')) or \
-           (pos_line[7][0] != ord('Z')):
-                raise IOError("Unknown position format: %s"%pos_line)
 
-                
+        if ok != b'ok\n':
+            print("DEBUG: 'pos_line': %s" % pos_line)
+            print("DEBUG: 'ok' line : %s" % ok)
+            raise IOError("Com error on M114 - received %s, expected 'ok'\n" % ok)
+
+        pos_line = pos_line.split(b' ')
+        if (pos_line[0][0] != ord('X')) or \
+                (pos_line[1][0] != ord('Y')) or \
+                (pos_line[2][0] != ord('Z')) or \
+                (pos_line[5][0] != ord('X')) or \
+                (pos_line[6][0] != ord('Y')) or \
+                (pos_line[7][0] != ord('Z')):
+            raise IOError("Unknown position format: %s" % pos_line)
+
         x_mm = float(pos_line[0][2:])
         y_mm = float(pos_line[1][2:])
         z_mm = float(pos_line[2][2:])
- 
+
         x_cnt = float(pos_line[5][2:])
         y_cnt = float(pos_line[6][2:])
         z_cnt = float(pos_line[7][2:])
-        
-        #Count values are more accurate
-        
-        calc_x_mm = x_cnt * (1.0/float(self.STEPS_PER_MM))
-        calc_y_mm = y_cnt * (1.0/float(self.STEPS_PER_MM))
-        calc_z_mm = z_cnt * (1.0/float(self.STEPS_PER_MM))
-        
+
+        # Count values are more accurate
+
+        calc_x_mm = x_cnt * (1.0 / float(self.STEPS_PER_MM))
+        calc_y_mm = y_cnt * (1.0 / float(self.STEPS_PER_MM))
+        calc_z_mm = z_cnt * (1.0 / float(self.STEPS_PER_MM))
+
         if round(calc_x_mm, 2) != x_mm:
-            raise IOError("Reporting error: %f != %f (based on count of %d)"%(x_mm, calc_x_mm, x_cnt))
+            raise IOError("Reporting error: %f != %f (based on count of %d)" % (x_mm, calc_x_mm, x_cnt))
 
         if round(calc_y_mm, 2) != y_mm:
-            raise IOError("Reporting error: %f != %f (based on count of %d)"%(y_mm, calc_y_mm, y_cnt))
-            
+            raise IOError("Reporting error: %f != %f (based on count of %d)" % (y_mm, calc_y_mm, y_cnt))
+
         if round(calc_z_mm, 2) != z_mm:
-            raise IOError("Reporting error: %f != %f (based on count of %d)"%(z_mm, calc_z_mm, z_cnt))
-            
+            raise IOError("Reporting error: %f != %f (based on count of %d)" % (z_mm, calc_z_mm, z_cnt))
+
         return calc_x_mm, calc_y_mm, calc_z_mm
-        
+
     def home(self, x=True, y=True, z=True):
         """Perform homing operation using G28 command.
         
@@ -375,11 +373,11 @@ class ChipShover:
         """
 
         self.ser.flush()
-        self.ser.reset_input_buffer()        
-        
+        self.ser.reset_input_buffer()
+
         if x == y == z == False:
             return
-        
+
         self.ser.write(b"G28")
         if x:
             self.ser.write(b" X")
@@ -388,11 +386,11 @@ class ChipShover:
         if z:
             self.ser.write(b" Z")
         self.ser.write(b"\n")
-        
+
         home_resp = self.wait_done()
-        
+
         self.z_home = self.get_position()[2]
-        
+
         return home_resp
 
     def sweep_x_y(self, x_start, x_end, y_start, y_end, step=0.1, x_step=None, y_step=None, z_plunge=0):
@@ -426,27 +424,25 @@ class ChipShover:
         if y_step is None:
             y_step = step
 
-        x = x_start      
+        x = x_start
 
         while x <= x_end:
             self.move(x=x)
             y = y_start
             while y <= y_end:
-                self.move(y=y)         
+                self.move(y=y)
 
                 if z_plunge:
                     old_z = self.get_position()[2]
-                    self.move(z = (old_z-z_plunge))
+                    self.move(z=(old_z - z_plunge))
 
-                yield (x, y)
+                yield x, y
 
                 if z_plunge:
-                    self.move(z = old_z)
+                    self.move(z=old_z)
 
                 y += y_step
             x += x_step
-
-
 
     def wait_done(self, timeout=5, debug=False):
         """Wait for a command to be acknowledged by checking for 'ok' response.
@@ -460,13 +456,13 @@ class ChipShover:
         then stop() will be called. This is done in case you are using
         ChipShover interactively and hit Ctrl-C to try and abort a move operation.
         """
-        
+
         try:
             timeout = timeout * 4
             timeout_cnt = 0
 
             debug_data = b""
-            while True:                
+            while True:
                 resp = self.ser.readline()
 
                 if resp:
@@ -475,11 +471,11 @@ class ChipShover:
                 if resp and debug:
                     print(resp)
 
-                #This is an OK response - indicates device is alive
+                # This is an OK response - indicates device is alive
                 if resp == b'echo:busy: processing\n':
                     timeout_cnt = 0
 
-                #Done deal I guess
+                # Done deal I guess
                 if resp == b'ok\n':
                     break
 
@@ -487,18 +483,18 @@ class ChipShover:
                 timeout_cnt += 1
 
                 if timeout_cnt > timeout:
-                    raise IOError("Device timed out, responses: %s"%str(debug_data))
+                    raise IOError("Device timed out, responses: %s" % str(debug_data))
 
         except KeyboardInterrupt:
             if self.call_stop_on_ctrlc:
                 print("Ctrl-C detected - calling stop() to stop table movement")
                 self.stop()
             raise
-        
-        #Sometimes buffer seems to have stuff in it still - do one last read
+
+        # Sometimes buffer seems to have stuff in it still - do one last read
         resp = self.ser.readline()
         debug_data += resp
-        
+
         return debug_data
 
     def status(self):
@@ -516,13 +512,13 @@ class ChipShover:
         pos_line = self.ser.readline()
         if not pos_line:
             return None
-        if (pos_line[0] == 0):
+        if pos_line[0] == 0:
             return "Idle"
-        elif (pos_line[0] == 2):
+        elif pos_line[0] == 2:
             return "Unhomed"
-        elif (pos_line[0] == 8):
+        elif pos_line[0] == 8:
             return "5V fuse blown"
-        #ok = self.ser.readline()
+        # ok = self.ser.readline()
 
     def erase_firmware(self):
         """Erases the firmware of the SAM3X on the ChipShover
@@ -543,7 +539,6 @@ class ChipShover:
 
         If com port detection fails, reprogramming must be done with firmware_update()
         """
-        import time, serial.tools.list_ports
         before = serial.tools.list_ports.comports()
         before = [b.device for b in before]
         time.sleep(0.5)
