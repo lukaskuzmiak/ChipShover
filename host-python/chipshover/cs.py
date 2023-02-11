@@ -72,6 +72,7 @@
 from .samba import Samba
 import binascii
 import datetime
+import re
 import serial
 import serial.tools.list_ports
 import time
@@ -158,6 +159,9 @@ class ChipShover:
     # Default ChipShover table/firmware combo
     STEPS_PER_MM = 1600
 
+    M503_STEPS_REGEX = re.compile(rb'M92 X([\d.]*) Y([\d.]*) Z([\d.]*)')
+    M114_REGEX = re.compile(rb'X:([\d.]*) Y:([\d.]*) Z:([\d.]*) Count X:(\d*) Y:(\d*) Z:(\d*)\n')
+
     def __init__(self, comport):
         """Connect to ChipShover-Controller using given serial port."""
         self.ser = serial.Serial(comport, rtscts=True)
@@ -166,7 +170,6 @@ class ChipShover:
         # Required for ChipShover-One + Archim2 USB serial
         self.ser.rtscts = True
         self.ser.timeout = 0.25
-        self.z_home = None
 
         self.ser.flush()
         self.ser.reset_input_buffer()
@@ -185,38 +188,30 @@ class ChipShover:
         self.ser.write(b"M503\n")
         results = self.wait_done()
         try:
-            splitres = results.split(b"Steps per unit:\necho: M92")[1].split(b"\n")[0]
-            splitres = splitres.split(b" ")
-            if splitres[1][0] != ord('X') or \
-                    splitres[2][0] != ord('Y') or \
-                    splitres[3][0] != ord('Z'):
-                raise IOError("Communication problem attempting to read" + \
-                              "M503 response. %s was splitres" % splitres)
-            xsteps = float(splitres[1][1:])
-            ysteps = float(splitres[2][1:])
-            zsteps = float(splitres[3][1:])
+            groups = re.search(self.M503_STEPS_REGEX, results)
+            if not groups:
+                raise IOError('Communication problem attempting to read M503 response.')
 
-            if xsteps != ysteps != zsteps:
-                raise ValueError("XSTEPS/YSTEPS/ZSTEPS differs. Abort. %f %f %f" % (xsteps, ysteps, zsteps))
+            x_steps, y_steps, z_steps = float(groups[1]), float(groups[2]), float(groups[3])
+            if x_steps != y_steps != z_steps:
+                raise ValueError("X_STEPS/Y_STEPS/Z_STEPS differs. Abort. %f %f %f" % (x_steps, y_steps, z_steps))
 
-            if xsteps < 100 or xsteps > 10E3:
-                raise ValueError("Sanity check in XSTEPS failed. %f" % xsteps)
+            if x_steps < 100 or x_steps > 10E3:
+                raise ValueError("Sanity check in X_STEPS failed. %f" % x_steps)
 
-            self.STEPS_PER_MM = int(xsteps)
+            self.STEPS_PER_MM = int(x_steps)
 
         except Exception:
             print("Failed to read steps/mm, check communication is OK.")
             print("Response to M503: %s" % results)
             raise
 
-        self.set_fan(50)
-
         self.call_stop_on_ctrlc = True
 
         # TODO -
         # signal.signal(signal.SIGINT, self.stop)
 
-    def set_fan(self, fan_speed=100):
+    def set_fan_active_speed(self, fan_speed=100):
         """Sets cooling fan speed, range of 0 - 100"""
 
         fan_pwm = (float(fan_speed) / 100.0) * 255
@@ -224,13 +219,11 @@ class ChipShover:
         fan_pwm = min(fan_pwm, 255)
         fan_pwm = max(fan_pwm, 0)
 
-        # Early protos had this as P1, now P0
-        self.ser.write(b"M106 P0 S%d\n" % fan_pwm)
+        self.ser.write(b"M710 S%d\n" % fan_pwm)
         self.wait_done()
 
     def close(self):
         """Closes serial port"""
-        self.set_fan(0)
         self.ser.close()
 
     def stop(self):
@@ -254,30 +247,12 @@ class ChipShover:
         print("***KILL CALLED. Power Cycle Needed!***")
         self.wait_done()
 
-    def move_zdepth(self, z_depth):
-        """Sets the Z axis to a given 'depth', as referenced from home.
-        
-        The default Z-Axis homing sets the Z axis to some positive value, with
-        Z = 0 being the axis bottom. Most of the time you'd like to specify depth
-        below home position instead, this function lets you do that.
-        """
-
-        if self.z_home is None:
-            raise ValueError("Run Homing First")
-        self.move(z=self.z_home - z_depth)
-
     def move(self, x=None, y=None, z=None, debug=False):
         """Move table to commanded X, Y, Z location.
         
         Uses a `G0` command to move the table. The function
         will use a `M400` command to wait for the movement
         to complete before returning.
-        
-        WARNING: The `z` is an absolute position - the default
-                 home `z` is often the MAXIMUM value. Thus a
-                 move to z=0` may slam your table into the ground.
-                 You can use the `move_zdepth()` function for
-                 moving a depth from the home position instead.
         """
 
         cmdstr = b"G0 "
@@ -307,7 +282,7 @@ class ChipShover:
         self.ser.write(b"M400\n")
         self.wait_done()
 
-    def get_position(self, forcefinish=True):
+    def get_position(self, force_finish=True):
         """Gets the X/Y/Z position of the table.
         
         By default will wait for any movement to
@@ -316,7 +291,7 @@ class ChipShover:
         position.
         """
 
-        if forcefinish:
+        if force_finish:
             # wait for move to finish
             self.wait_for_move()
 
@@ -330,25 +305,14 @@ class ChipShover:
             print("DEBUG: 'ok' line : %s" % ok)
             raise IOError("Com error on M114 - received %s, expected 'ok'\n" % ok)
 
-        pos_line = pos_line.split(b' ')
-        if (pos_line[0][0] != ord('X')) or \
-                (pos_line[1][0] != ord('Y')) or \
-                (pos_line[2][0] != ord('Z')) or \
-                (pos_line[5][0] != ord('X')) or \
-                (pos_line[6][0] != ord('Y')) or \
-                (pos_line[7][0] != ord('Z')):
+        groups = re.match(self.M114_REGEX, pos_line)
+        if not groups:
             raise IOError("Unknown position format: %s" % pos_line)
 
-        x_mm = float(pos_line[0][2:])
-        y_mm = float(pos_line[1][2:])
-        z_mm = float(pos_line[2][2:])
-
-        x_cnt = float(pos_line[5][2:])
-        y_cnt = float(pos_line[6][2:])
-        z_cnt = float(pos_line[7][2:])
+        x_mm, y_mm, z_mm = float(groups[1]), float(groups[2]), float(groups[3])
+        x_cnt, y_cnt, z_cnt = float(groups[4]), float(groups[5]), float(groups[6])
 
         # Count values are more accurate
-
         calc_x_mm = x_cnt * (1.0 / float(self.STEPS_PER_MM))
         calc_y_mm = y_cnt * (1.0 / float(self.STEPS_PER_MM))
         calc_z_mm = z_cnt * (1.0 / float(self.STEPS_PER_MM))
@@ -375,7 +339,7 @@ class ChipShover:
         self.ser.flush()
         self.ser.reset_input_buffer()
 
-        if x == y == z == False:
+        if x is y is z is False:
             return
 
         self.ser.write(b"G28")
@@ -388,9 +352,6 @@ class ChipShover:
         self.ser.write(b"\n")
 
         home_resp = self.wait_done()
-
-        self.z_home = self.get_position()[2]
-
         return home_resp
 
     def sweep_x_y(self, x_start, x_end, y_start, y_end, step=0.1, x_step=None, y_step=None, z_plunge=0):
@@ -472,14 +433,13 @@ class ChipShover:
                     print(resp)
 
                 # This is an OK response - indicates device is alive
-                if resp == b'echo:busy: processing\n':
+                if resp and resp.startswith(b'echo:'):
                     timeout_cnt = 0
 
                 # Done deal I guess
                 if resp == b'ok\n':
                     break
 
-                time.sleep(0.25)
                 timeout_cnt += 1
 
                 if timeout_cnt > timeout:
@@ -498,7 +458,7 @@ class ChipShover:
         return debug_data
 
     def status(self):
-        """ Gets the status of the ChipShouter
+        """ Gets the status of the ChipShover
 
         This function CANNOT tell whether a fuse
         or emergency stop event has happened.
